@@ -16,7 +16,7 @@ export enum InterviewStatus {
 
 export interface InterviewConfig {
   topic: string;
-  difficulty: 'Entry/ Undergraduate' | 'Senior' | 'Expert';
+  difficulty: 'Junior' | 'Senior' | 'Expert';
   companyName: string;
   jobDescription: string;
   rolesResponsibilities: string;
@@ -25,4 +25,5 @@ export interface InterviewConfig {
 export interface TranscriptionItem {
   role: 'user' | 'assistant';
   text: string;
+  type?: 'dialogue' | 'feedback';
 }

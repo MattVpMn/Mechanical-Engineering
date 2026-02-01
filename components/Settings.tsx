@@ -43,7 +43,7 @@ export const Settings: React.FC<SettingsProps> = ({ config, onChange, disabled }
             onChange={(e) => onChange({ ...config, difficulty: e.target.value as any })}
             className="w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:opacity-50"
           >
-            <option value="Entry/ Undergraduate">Entry/ Undergraduate</option>
+            <option value="Junior">Entry / Graduate</option>
             <option value="Senior">Senior</option>
             <option value="Expert">Expert</option>
           </select>

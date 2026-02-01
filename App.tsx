@@ -7,7 +7,6 @@ import { Visualizer } from './components/Visualizer';
 import { Settings } from './components/Settings';
 import { decode, createBlob, decodeAudioData } from './utils/audioUtils';
 
-// Audio Contexts - must be initialized on user interaction
 let inputAudioContext: AudioContext | null = null;
 let outputAudioContext: AudioContext | null = null;
 let nextStartTime = 0;
@@ -45,11 +44,36 @@ const App: React.FC = () => {
     setIsUserTalking(false);
   }, [cleanupAudio]);
 
+  const processTextWithFeedback = (text: string): TranscriptionItem[] => {
+    const feedbackRegex = /\[FEEDBACK\]([\s\S]*?)\[\/FEEDBACK\]/g;
+    const items: TranscriptionItem[] = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = feedbackRegex.exec(text)) !== null) {
+      // Add text before feedback as dialogue
+      const beforeFeedback = text.substring(lastIndex, match.index).trim();
+      if (beforeFeedback) {
+        items.push({ role: 'assistant', text: beforeFeedback, type: 'dialogue' });
+      }
+      // Add feedback
+      items.push({ role: 'assistant', text: match[1].trim(), type: 'feedback' });
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text
+    const remaining = text.substring(lastIndex).trim();
+    if (remaining) {
+      items.push({ role: 'assistant', text: remaining, type: 'dialogue' });
+    }
+
+    return items;
+  };
+
   const startInterview = async () => {
     try {
       setStatus(InterviewStatus.CONNECTING);
       
-      // 1. Setup Audio
       if (!inputAudioContext) inputAudioContext = new AudioContext({ sampleRate: 16000 });
       if (!outputAudioContext) outputAudioContext = new AudioContext({ sampleRate: 24000 });
       
@@ -59,41 +83,30 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      // Build dynamic system instruction with provided job details
       const dynamicInstruction = `${SYSTEM_INSTRUCTION}
       
-      CURRENT INTERVIEW PARAMETERS:
-      Company Name: ${config.companyName}
-      Topic: ${config.topic}
+      CURRENT CONTEXT:
+      Company: ${config.companyName}
+      Focus: ${config.topic}
       Level: ${config.difficulty}
       
-      PASTED JOB DESCRIPTION:
-      ${config.jobDescription || "Not provided - conduct a general mechanical engineering interview for the topic."}
-      
-      PASTED ROLES & RESPONSIBILITIES:
-      ${config.rolesResponsibilities || "Not provided - focus on standard engineering responsibilities for the level."}
+      JD: ${config.jobDescription || "Not provided. Use standard company/role knowledge."}
+      ROLES: ${config.rolesResponsibilities || "Not provided. Use standard company/role knowledge."}
       `;
 
-      // 2. Connect Session
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
-            console.log('Session Opened');
             setStatus(InterviewStatus.ACTIVE);
-            
-            // Start streaming microphone
             const source = inputAudioContext!.createMediaStreamSource(stream);
             const scriptProcessor = inputAudioContext!.createScriptProcessor(4096, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (event) => {
               const inputData = event.inputBuffer.getChannelData(0);
-              
-              // Simple VAD (Voice Activity Detection) for UI feedback
               const volume = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0);
               setIsUserTalking(volume > 0.05);
-
               const pcmBlob = createBlob(inputData);
               sessionPromise.then((session) => {
                 session.sendRealtimeInput({ media: pcmBlob });
@@ -101,12 +114,8 @@ const App: React.FC = () => {
             };
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputAudioContext!.destination);
-
-            // The model will initiate the interview based on the SYSTEM_INSTRUCTION 
-            // once the audio stream starts providing input context.
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Audio Output Handling
             const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (audioData) {
               setIsSpeaking(true);
@@ -124,7 +133,6 @@ const App: React.FC = () => {
               sources.add(source);
             }
 
-            // Transcription Handling
             if (message.serverContent?.outputTranscription) {
               transcriptionBuffer.current.assistant += message.serverContent.outputTranscription.text;
             } else if (message.serverContent?.inputTranscription) {
@@ -135,17 +143,16 @@ const App: React.FC = () => {
               const userText = transcriptionBuffer.current.user.trim();
               const assistantText = transcriptionBuffer.current.assistant.trim();
               
-              if (userText || assistantText) {
-                setTranscription(prev => [
-                  ...prev,
-                  ...(userText ? [{ role: 'user' as const, text: userText }] : []),
-                  ...(assistantText ? [{ role: 'assistant' as const, text: assistantText }] : [])
-                ]);
+              if (userText) {
+                setTranscription(prev => [...prev, { role: 'user', text: userText, type: 'dialogue' }]);
+              }
+              if (assistantText) {
+                const processedItems = processTextWithFeedback(assistantText);
+                setTranscription(prev => [...prev, ...processedItems]);
               }
               transcriptionBuffer.current = { user: '', assistant: '' };
             }
 
-            // Interruption handling
             if (message.serverContent?.interrupted) {
               sources.forEach(s => s.stop());
               sources.clear();
@@ -157,10 +164,7 @@ const App: React.FC = () => {
             console.error('Session error:', err);
             stopInterview();
           },
-          onclose: () => {
-            console.log('Session closed');
-            stopInterview();
-          }
+          onclose: () => stopInterview()
         },
         config: {
           responseModalities: [Modality.AUDIO],
@@ -178,11 +182,10 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to start interview:', err);
       setStatus(InterviewStatus.IDLE);
-      alert('Could not start interview. Please ensure microphone access is granted.');
+      alert('Could not start interview.');
     }
   };
 
-  // Scroll to bottom of transcription
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (scrollRef.current) {
@@ -192,7 +195,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
-      {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -202,11 +204,10 @@ const App: React.FC = () => {
               </svg>
             </div>
             <div>
-              <h1 className="text-xl font-bold text-slate-900 leading-tight">MechEng AI</h1>
-              <p className="text-xs text-slate-500 font-medium">PROFESSIONAL INTERVIEW SIMULATOR</p>
+              <h1 className="text-xl font-bold text-slate-900 leading-tight">MechEng AI Coach</h1>
+              <p className="text-xs text-slate-500 font-medium">TRAINING FOR SUCCESS</p>
             </div>
           </div>
-          
           <div className="flex items-center space-x-2">
             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
               status === InterviewStatus.ACTIVE ? 'bg-green-100 text-green-800' :
@@ -225,40 +226,23 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 max-w-6xl mx-auto w-full p-4 md:p-6 space-y-6">
-        {/* Settings Area */}
-        <Settings 
-          config={config} 
-          onChange={setConfig} 
-          disabled={status !== InterviewStatus.IDLE} 
-        />
+        <Settings config={config} onChange={setConfig} disabled={status !== InterviewStatus.IDLE} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          {/* Interaction Area */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[550px]">
             <div className="flex-1 flex flex-col">
-              <Visualizer 
-                isActive={status === InterviewStatus.ACTIVE} 
-                isSpeaking={isSpeaking}
-                isUserTalking={isUserTalking}
-              />
+              <Visualizer isActive={status === InterviewStatus.ACTIVE} isSpeaking={isSpeaking} isUserTalking={isUserTalking} />
             </div>
-            
             <div className="p-6 border-t border-slate-100 bg-slate-50/50">
               {status === InterviewStatus.IDLE ? (
-                <button
-                  onClick={startInterview}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-lg shadow-xl shadow-blue-600/20 transition-all flex items-center justify-center space-x-2"
-                >
+                <button onClick={startInterview} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-lg shadow-xl shadow-blue-600/20 transition-all flex items-center justify-center space-x-2">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m8 0h-3m4 0a9 9 0 11-18 0" />
                   </svg>
-                  <span>Start Interview</span>
+                  <span>Start Training Session</span>
                 </button>
               ) : (
-                <button
-                  onClick={stopInterview}
-                  className="w-full py-4 bg-red-500 hover:bg-red-600 text-white rounded-2xl font-bold text-lg shadow-xl shadow-red-500/20 transition-all flex items-center justify-center space-x-2"
-                >
+                <button onClick={stopInterview} className="w-full py-4 bg-red-500 hover:bg-red-600 text-white rounded-2xl font-bold text-lg shadow-xl shadow-red-500/20 transition-all flex items-center justify-center space-x-2">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1c1 0 2 0 3 0a1 1 0 011 1v4a1 1 0 01-1 1c-1 0-2 0-3 0a1 1 0 01-1-1v-4z" />
@@ -269,42 +253,42 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Transcript Area */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col h-[550px]">
             <div className="p-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-bold text-slate-800 flex items-center">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
-                Live Transcript
+                Session Transcript & Feedback
               </h2>
-              <span className="text-xs text-slate-400">Tailored to JD</span>
             </div>
-            <div 
-              ref={scrollRef}
-              className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"
-            >
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth bg-slate-50/30">
               {transcription.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center px-8">
-                  <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-slate-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m8 0h-3m4 0a9 9 0 11-18 0" />
-                    </svg>
-                  </div>
-                  <p>Start the interview to see the live conversation transcript here.</p>
+                  <p>Training feedback and dialogue will appear here once you start.</p>
                 </div>
               ) : (
                 transcription.map((item, idx) => (
                   <div key={idx} className={`flex flex-col ${item.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-                      item.role === 'user' 
-                        ? 'bg-blue-600 text-white rounded-tr-none' 
-                        : 'bg-slate-100 text-slate-800 rounded-tl-none border border-slate-200'
+                    <div className={`max-w-[90%] rounded-2xl px-4 py-3 text-sm ${
+                      item.type === 'feedback' 
+                        ? 'bg-amber-50 border-2 border-amber-200 text-amber-900 font-medium shadow-sm' 
+                        : item.role === 'user' 
+                          ? 'bg-blue-600 text-white rounded-tr-none' 
+                          : 'bg-white text-slate-800 rounded-tl-none border border-slate-200 shadow-sm'
                     }`}>
+                      {item.type === 'feedback' && (
+                        <div className="flex items-center mb-1 text-amber-700 text-[10px] font-bold uppercase tracking-widest">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          Actionable Training Tip
+                        </div>
+                      )}
                       {item.text}
                     </div>
-                    <span className="text-[10px] text-slate-400 mt-1 uppercase font-bold tracking-wider">
-                      {item.role === 'user' ? 'You' : 'Interviewer'}
+                    <span className="text-[10px] text-slate-400 mt-1 uppercase font-bold tracking-wider px-1">
+                      {item.type === 'feedback' ? 'Coach' : item.role === 'user' ? 'Candidate' : 'Interviewer'}
                     </span>
                   </div>
                 ))
@@ -316,13 +300,7 @@ const App: React.FC = () => {
 
       <footer className="bg-white border-t border-slate-200 p-6 mt-auto">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center text-slate-500 text-sm gap-4">
-          <div className="flex items-center space-x-4">
-            <span className="flex items-center">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 mr-2"></div>
-              Gemini Live v2.5
-            </span>
-          </div>
-          <p>© 2024 MechEng Interview AI. Tailored professional interview simulation.</p>
+          <p>© 2024 MechEng Interview Coach. Focus: Training for Industry Success.</p>
         </div>
       </footer>
     </div>
