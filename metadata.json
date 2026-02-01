@@ -1,0 +1,7 @@
+{
+  "name": "Voice Agent- Mechanical Engineering Interviews ",
+  "description": "A sophisticated, voice-enabled interview simulator specifically designed for mechanical engineering graduates, featuring real-time feedback and technical vetting across core disciplines like thermodynamics, fluid mechanics, and materials science.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
