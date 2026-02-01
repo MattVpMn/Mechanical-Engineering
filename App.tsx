@@ -1,11 +1,11 @@
 
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Settings } from './components/Settings';
-import { Visualizer } from './components/Visualizer';
+import { InterviewStatus, InterviewConfig, TranscriptionItem } from './types';
 import { DEFAULT_CONFIG, SYSTEM_INSTRUCTION } from './constants';
-import { InterviewConfig, InterviewStatus, TranscriptionItem } from './types';
-import { createBlob, decode, decodeAudioData } from './utils/audioUtils';
+import { Visualizer } from './components/Visualizer';
+import { Settings } from './components/Settings';
+import { decode, createBlob, decodeAudioData } from './utils/audioUtils';
 
 // Audio Contexts - must be initialized on user interaction
 let inputAudioContext: AudioContext | null = null;
@@ -13,21 +13,9 @@ let outputAudioContext: AudioContext | null = null;
 let nextStartTime = 0;
 const sources = new Set<AudioBufferSourceNode>();
 
-const STORAGE_KEY = 'mecheng_interview_config';
-
 const App: React.FC = () => {
   const [status, setStatus] = useState<InterviewStatus>(InterviewStatus.IDLE);
-  const [config, setConfig] = useState<InterviewConfig>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return DEFAULT_CONFIG;
-      }
-    }
-    return DEFAULT_CONFIG;
-  });
+  const [config, setConfig] = useState<InterviewConfig>(DEFAULT_CONFIG);
   const [transcription, setTranscription] = useState<TranscriptionItem[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isUserTalking, setIsUserTalking] = useState(false);
@@ -35,11 +23,6 @@ const App: React.FC = () => {
   const sessionRef = useRef<any>(null);
   const transcriptionBuffer = useRef({ user: '', assistant: '' });
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-
-  // Persist config changes
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-  }, [config]);
 
   const cleanupAudio = useCallback(() => {
     sources.forEach(s => s.stop());
@@ -66,6 +49,7 @@ const App: React.FC = () => {
     try {
       setStatus(InterviewStatus.CONNECTING);
       
+      // 1. Setup Audio
       if (!inputAudioContext) inputAudioContext = new AudioContext({ sampleRate: 16000 });
       if (!outputAudioContext) outputAudioContext = new AudioContext({ sampleRate: 24000 });
       
@@ -75,21 +59,22 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
+      // Build dynamic system instruction with provided job details
       const dynamicInstruction = `${SYSTEM_INSTRUCTION}
       
-      --- CONTEXT FOR THIS SESSION ---
-      TARGET COMPANY: ${config.companyName || "the engineering firm"}
-      INTERVIEW TOPIC: ${config.topic}
-      CANDIDATE LEVEL: ${config.difficulty}
+      CURRENT INTERVIEW PARAMETERS:
+      Company Name: ${config.companyName}
+      Topic: ${config.topic}
+      Level: ${config.difficulty}
       
-      FULL JOB DESCRIPTION:
-      ${config.jobDescription || "Standard mechanical engineering role."}
+      PASTED JOB DESCRIPTION:
+      ${config.jobDescription || "Not provided - conduct a general mechanical engineering interview for the topic."}
       
-      SPECIFIC ROLES & RESPONSIBILITIES:
-      ${config.rolesResponsibilities || "General engineering responsibilities."}
-      --- END CONTEXT ---
+      PASTED ROLES & RESPONSIBILITIES:
+      ${config.rolesResponsibilities || "Not provided - focus on standard engineering responsibilities for the level."}
       `;
 
+      // 2. Connect Session
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
@@ -97,12 +82,15 @@ const App: React.FC = () => {
             console.log('Session Opened');
             setStatus(InterviewStatus.ACTIVE);
             
+            // Start streaming microphone
             const source = inputAudioContext!.createMediaStreamSource(stream);
             const scriptProcessor = inputAudioContext!.createScriptProcessor(4096, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (event) => {
               const inputData = event.inputBuffer.getChannelData(0);
+              
+              // Simple VAD (Voice Activity Detection) for UI feedback
               const volume = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0);
               setIsUserTalking(volume > 0.05);
 
@@ -114,14 +102,11 @@ const App: React.FC = () => {
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputAudioContext!.destination);
 
-            // Initial trigger to make AI start with the requested flow
-            sessionPromise.then(session => {
-              session.sendRealtimeInput({
-                text: "The interview has started. Please look at the provided Job Description for context, identify the company name, and initiate the conversation with one of the three required icebreaker variations (Motivation, Introduction, or Alignment)."
-              });
-            });
+            // The model will initiate the interview based on the SYSTEM_INSTRUCTION 
+            // once the audio stream starts providing input context.
           },
           onmessage: async (message: LiveServerMessage) => {
+            // Audio Output Handling
             const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (audioData) {
               setIsSpeaking(true);
@@ -139,6 +124,7 @@ const App: React.FC = () => {
               sources.add(source);
             }
 
+            // Transcription Handling
             if (message.serverContent?.outputTranscription) {
               transcriptionBuffer.current.assistant += message.serverContent.outputTranscription.text;
             } else if (message.serverContent?.inputTranscription) {
@@ -159,6 +145,7 @@ const App: React.FC = () => {
               transcriptionBuffer.current = { user: '', assistant: '' };
             }
 
+            // Interruption handling
             if (message.serverContent?.interrupted) {
               sources.forEach(s => s.stop());
               sources.clear();
@@ -195,6 +182,7 @@ const App: React.FC = () => {
     }
   };
 
+  // Scroll to bottom of transcription
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (scrollRef.current) {
@@ -204,6 +192,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
+      {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -214,7 +203,7 @@ const App: React.FC = () => {
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 leading-tight">MechEng AI</h1>
-              <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Professional Simulation</p>
+              <p className="text-xs text-slate-500 font-medium">PROFESSIONAL INTERVIEW SIMULATOR</p>
             </div>
           </div>
           
@@ -236,6 +225,7 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 max-w-6xl mx-auto w-full p-4 md:p-6 space-y-6">
+        {/* Settings Area */}
         <Settings 
           config={config} 
           onChange={setConfig} 
@@ -243,6 +233,7 @@ const App: React.FC = () => {
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          {/* Interaction Area */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[550px]">
             <div className="flex-1 flex flex-col">
               <Visualizer 
@@ -261,7 +252,7 @@ const App: React.FC = () => {
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m8 0h-3m4 0a9 9 0 11-18 0" />
                   </svg>
-                  <span>Start Live Interview</span>
+                  <span>Start Interview</span>
                 </button>
               ) : (
                 <button
@@ -278,15 +269,16 @@ const App: React.FC = () => {
             </div>
           </div>
 
+          {/* Transcript Area */}
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col h-[550px]">
             <div className="p-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-bold text-slate-800 flex items-center">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
-                Interview Transcript
+                Live Transcript
               </h2>
-              <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded tracking-tighter uppercase">Dynamic Context</span>
+              <span className="text-xs text-slate-400">Tailored to JD</span>
             </div>
             <div 
               ref={scrollRef}
@@ -299,7 +291,7 @@ const App: React.FC = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m8 0h-3m4 0a9 9 0 11-18 0" />
                     </svg>
                   </div>
-                  <p>Awaiting connection. The interviewer will start with a custom opening based on your JD.</p>
+                  <p>Start the interview to see the live conversation transcript here.</p>
                 </div>
               ) : (
                 transcription.map((item, idx) => (
@@ -312,7 +304,7 @@ const App: React.FC = () => {
                       {item.text}
                     </div>
                     <span className="text-[10px] text-slate-400 mt-1 uppercase font-bold tracking-wider">
-                      {item.role === 'user' ? 'Candidate' : 'Interviewer'}
+                      {item.role === 'user' ? 'You' : 'Interviewer'}
                     </span>
                   </div>
                 ))
@@ -330,7 +322,7 @@ const App: React.FC = () => {
               Gemini Live v2.5
             </span>
           </div>
-          <p>© 2024 MechEng Interview AI. Context-aware behavioral simulation.</p>
+          <p>© 2024 MechEng Interview AI. Tailored professional interview simulation.</p>
         </div>
       </footer>
     </div>

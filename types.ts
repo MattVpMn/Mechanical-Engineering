@@ -16,7 +16,7 @@ export enum InterviewStatus {
 
 export interface InterviewConfig {
   topic: string;
-  difficulty: 'Junior' | 'Senior' | 'Expert';
+  difficulty: 'Entry/ Undergraduate' | 'Senior' | 'Expert';
   companyName: string;
   jobDescription: string;
   rolesResponsibilities: string;
