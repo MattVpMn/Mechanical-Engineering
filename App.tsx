@@ -67,7 +67,7 @@ const App: React.FC = () => {
     return items;
   };
 
-  const startInterview = async (isResuming = false) => {
+  const startInterview = async (isResuming = false, jumpToTechnical = false) => {
     try {
       setStatus(InterviewStatus.CONNECTING);
       
@@ -80,10 +80,11 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      // If resuming, provide the existing transcription as context
       const resumeContext = isResuming 
         ? `\nRESUME CONTEXT: Here is what has been discussed so far. Pick up exactly where we left off:\n${transcription.map(t => `${t.role}: ${t.text}`).join('\n')}`
         : "";
+
+      const jumpContext = jumpToTechnical ? "\n[JUMP_TO_TECHNICAL] flag active. Skip straight to the technical round after greeting and name collection." : "";
 
       const dynamicInstruction = `${SYSTEM_INSTRUCTION}
       
@@ -94,6 +95,7 @@ const App: React.FC = () => {
       JD: ${config.jobDescription || "Not provided."}
       ROLES: ${config.rolesResponsibilities || "Not provided."}
       ${resumeContext}
+      ${jumpContext}
       `;
 
       const sessionPromise = ai.live.connect({
@@ -117,9 +119,10 @@ const App: React.FC = () => {
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputAudioContext!.destination);
 
-            // If resuming, send a small nudge to the AI to continue
             if (isResuming) {
               sessionPromise.then(s => s.sendRealtimeInput({ text: "I'm ready to continue our interview from where we stopped." }));
+            } else if (jumpToTechnical) {
+              sessionPromise.then(s => s.sendRealtimeInput({ text: "Hi, I'd like to jump directly to the technical round today." }));
             }
           },
           onmessage: async (message: LiveServerMessage) => {
@@ -169,7 +172,6 @@ const App: React.FC = () => {
           },
           onerror: (err) => {
             console.error('Session error:', err);
-            // Don't stop immediately to allow visual feedback, but set status
             setStatus(InterviewStatus.PAUSED);
           },
           onclose: () => {
@@ -196,7 +198,7 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to start interview:', err);
       setStatus(InterviewStatus.IDLE);
-      alert('Could not start interview. Please ensure microphone access is granted.');
+      alert('Could not start interview.');
     }
   };
 
@@ -257,15 +259,15 @@ const App: React.FC = () => {
                 </svg>
               </div>
               <div>
-                <h3 className="font-bold text-red-900">Connection Interrupted</h3>
-                <p className="text-sm text-red-700">Don't worry, you can resume right where you left off.</p>
+                <h3 className="font-bold text-red-900">Session Interrupted</h3>
+                <p className="text-sm text-red-700">The connection was lost. You can resume exactly where we left off.</p>
               </div>
             </div>
             <button 
               onClick={() => startInterview(true)}
               className="px-6 py-2 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20"
             >
-              Resume Interview
+              Resume Session
             </button>
           </div>
         )}
@@ -277,28 +279,38 @@ const App: React.FC = () => {
             </div>
             <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex flex-col space-y-3">
               {status === InterviewStatus.IDLE ? (
-                <>
-                  <button onClick={() => startInterview(false)} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-lg shadow-xl shadow-blue-600/20 transition-all flex items-center justify-center space-x-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m8 0h-3m4 0a9 9 0 11-18 0" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => startInterview(false)} 
+                    className="py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-sm shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center space-x-2"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <span>Start New Training Session</span>
+                    <span>Full Training</span>
                   </button>
-                  {transcription.length > 0 && (
-                    <button onClick={() => startInterview(true)} className="w-full py-3 bg-white border border-blue-200 text-blue-600 hover:bg-blue-50 rounded-2xl font-bold transition-all flex items-center justify-center space-x-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      <span>Resume From Last Point</span>
-                    </button>
-                  )}
-                </>
+                  <button 
+                    onClick={() => startInterview(false, true)} 
+                    className="py-4 bg-amber-500 hover:bg-amber-600 text-white rounded-2xl font-bold text-sm shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center space-x-2"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    <span>Jump to Technical</span>
+                  </button>
+                </div>
               ) : (
                 <button onClick={handleReset} className="w-full py-4 bg-slate-800 hover:bg-slate-900 text-white rounded-2xl font-bold text-lg shadow-xl shadow-slate-800/20 transition-all flex items-center justify-center space-x-2">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
-                  <span>End Training Session</span>
+                  <span>End Session</span>
+                </button>
+              )}
+              {status === InterviewStatus.IDLE && transcription.length > 0 && (
+                <button onClick={() => startInterview(true)} className="w-full py-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl text-xs font-bold transition-all">
+                  Resume From Last Context
                 </button>
               )}
             </div>
@@ -310,23 +322,17 @@ const App: React.FC = () => {
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                 </svg>
-                Session Feedback & Training
+                Coaching Log
               </h2>
               {transcription.length > 0 && (
-                <button onClick={handleReset} className="text-xs text-slate-400 hover:text-red-500 font-medium uppercase tracking-wider">Clear History</button>
+                <button onClick={handleReset} className="text-[10px] text-slate-400 hover:text-red-500 font-bold uppercase tracking-widest">Clear Log</button>
               )}
             </div>
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth bg-slate-50/30">
               {transcription.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center px-8">
-                  <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path d="M12 14l9-5-9-5-9 5 9 5z" />
-                      <path d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z" />
-                    </svg>
-                  </div>
-                  <p className="text-sm font-medium">Training feedback and interview dialogue will appear here.</p>
-                  <p className="text-xs mt-2">Sessions last up to 35 minutes.</p>
+                  <p className="text-sm font-medium">Session feedback will appear here.</p>
+                  <p className="text-[10px] mt-2 text-slate-300">Fast-track available for focused technical vetting.</p>
                 </div>
               ) : (
                 transcription.map((item, idx) => (
@@ -361,17 +367,7 @@ const App: React.FC = () => {
 
       <footer className="bg-white border-t border-slate-200 p-6 mt-auto">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center text-slate-500 text-sm gap-4">
-          <div className="flex items-center space-x-6">
-            <span className="flex items-center">
-              <div className="w-2 h-2 rounded-full bg-blue-500 mr-2"></div>
-              STAR Method Training
-            </span>
-            <span className="flex items-center">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 mr-2"></div>
-              Live Technical Vetting
-            </span>
-          </div>
-          <p>© 2024 MechEng Interview Coach. Focus: Phototronics Professional Excellence.</p>
+          <p>© 2024 MechEng Interview Coach. Focus: Industry Excellence & Technical Mastery.</p>
         </div>
       </footer>
     </div>
